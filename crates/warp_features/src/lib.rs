@@ -874,6 +874,10 @@ pub enum FeatureFlag {
 
     /// Replaces the raw harness CLI command with a styled header showing CLI name + status icon.
     HarnessSessionHeader,
+
+    // Enables Android Studio-like features in Warp:
+    // device management, gradle commands, logcat, and screen mirroring.
+    AndroidStudioMode,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
@@ -947,6 +951,10 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::SoloUserByok,
     FeatureFlag::CustomInferenceEndpoints,
     FeatureFlag::RemoteCodebaseIndexing,
+
+    // Enables Android Studio-like features in Warp:
+    // device management, gradle commands, logcat, and screen mirroring.
+    FeatureFlag::AndroidStudioMode,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Warp).
