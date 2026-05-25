@@ -1190,7 +1190,7 @@ impl LeftPanelView {
             .finish();
 
         // Project detection: use the current terminal's working directory
-        let cwd = self
+        let cwd_location = self
             .active_pane_group
             .as_ref()
             .and_then(|pg| pg.upgrade(app))
@@ -1199,7 +1199,10 @@ impl LeftPanelView {
                     .as_ref(app)
                     .most_recent_directories_for_pane_group(pg.id())
                     .and_then(|mut dirs| dirs.next().map(|d| d.path))
-            })
+            });
+        let cwd = cwd_location
+            .as_ref()
+            .and_then(|p| p.to_local_path().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let is_android = GradleService::new(cwd.clone()).has_gradlew();
 

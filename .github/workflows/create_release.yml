@@ -118,6 +118,18 @@ jobs:
         run: git config --system core.longpaths true
         shell: bash
 
+      - name: Install protoc
+        run: |
+          $protoDir = "$env:LOCALAPPDATA\protoc"
+          if (!(Test-Path "$protoDir\bin\protoc.exe")) {
+            New-Item -ItemType Directory -Force -Path "$protoDir" | Out-Null
+            $url = "https://github.com/protocolbuffers/protobuf/releases/download/v25.1/protoc-25.1-win64.zip"
+            Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\protoc.zip"
+            Expand-Archive -Path "$env:TEMP\protoc.zip" -DestinationPath "$protoDir" -Force
+          }
+          echo "$protoDir\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
+
       - name: Cache Cargo target
         uses: actions/cache@v4
         with:
