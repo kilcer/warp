@@ -168,6 +168,17 @@ fn generate_channel_config_if_needed(target_family: &str, target_os: &str) {
         .status()
         .is_err()
     {
+        // No config generator available — write minimal default configs so the
+        // build can proceed. This is the path taken by fork builds.
+        let out_dir = env::var("OUT_DIR").expect("OUT_DIR must be set");
+        let default_config = r#"{"app_id":"dev.warp.Warp","logfile_name":"warp.log","server_config":{"server_root_url":"https://app.warp.dev","rtc_server_url":"wss://rtc.app.warp.dev/graphql/v2","session_sharing_server_url":"wss://sessions.app.warp.dev","firebase_auth_api_key":"AIzaSyBdy3O3S9hrdayLJxJ7mriBR4qgUaUygAs"},"oz_config":{"oz_root_url":"https://oz.warp.dev","workload_audience_url":null},"telemetry_config":null,"autoupdate_config":null,"crash_reporting_config":null,"mcp_static_config":null}"#;
+        for channel in ["local", "dev", "stable", "preview"] {
+            let config_path = Path::new(&out_dir).join(format!("{channel}_config.json"));
+            fs::write(&config_path, default_config).unwrap_or_else(|err| {
+                panic!("Failed to write default config to {}: {err}", config_path.display())
+            });
+        }
+        println!("cargo:warning=Using default channel config (warp-channel-config not found on PATH)");
         return;
     }
 
