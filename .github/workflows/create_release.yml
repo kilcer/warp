@@ -73,6 +73,10 @@ jobs:
         run: ./script/linux/install_build_deps
         shell: bash
 
+      - name: Install cargo-about
+        run: cargo install cargo-about@0.8.4
+        shell: bash
+
       - name: Cache Cargo target
         uses: actions/cache@v4
         with:
@@ -129,6 +133,10 @@ jobs:
           }
           echo "$protoDir\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         shell: pwsh
+
+      - name: Install cargo-about
+        run: cargo install cargo-about@0.8.4
+        shell: bash
 
       - name: Cache Cargo target
         uses: actions/cache@v4
