@@ -73,6 +73,12 @@ jobs:
         run: ./script/linux/install_build_deps
         shell: bash
 
+      - name: Install linuxdeploy
+        run: |
+          script/linux/install_linuxdeploy
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        shell: bash
+
       - name: Install cargo-about
         run: cargo install cargo-about@0.8.4
         shell: bash
