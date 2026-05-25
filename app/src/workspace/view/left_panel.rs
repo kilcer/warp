@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::{send_telemetry_from_ctx, ui::Icon};
@@ -15,7 +16,6 @@ use warpui::{
     AppContext, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
     ViewContext, ViewHandle, WeakViewHandle,
 };
-
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::code::buffer_location::LocalOrRemotePath;
@@ -68,6 +68,8 @@ struct MouseStateHandles {
     global_search_button: MouseStateHandle,
     warp_drive_button: MouseStateHandle,
     conversation_list_view_button: MouseStateHandle,
+    android_run_button: MouseStateHandle,
+    android_device_label: MouseStateHandle,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +78,10 @@ pub enum LeftPanelAction {
     GlobalSearch { entry_focus: GlobalSearchEntryFocus },
     WarpDrive,
     ConversationListView,
+    RunBuild {
+        project_dir: std::path::PathBuf,
+        serial: String,
+    },
 }
 
 pub enum LeftPanelEvent {
@@ -162,6 +168,13 @@ pub struct ToolbeltButtonConfig {
     pub tooltip_keybinding: Option<String>,
 }
 
+/// Device list shared between the UI thread and a background watcher thread.
+#[derive(Default)]
+struct SharedAndroidState {
+    devices: Vec<crate::android::device::AndroidDevice>,
+    selected_index: usize,
+}
+
 pub struct LeftPanelView {
     resizable_state_handle: ResizableStateHandle,
     mouse_state_handles: MouseStateHandles,
@@ -170,6 +183,7 @@ pub struct LeftPanelView {
     conversation_list_view: ViewHandle<ConversationListView>,
     active_view: active_view_state::ActiveViewState,
     toolbelt_buttons: Vec<ToolbeltButtonConfig>,
+    android_state: Arc<Mutex<SharedAndroidState>>,
     active_pane_group: Option<WeakViewHandle<PaneGroup>>,
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     working_directories_model: ModelHandle<WorkingDirectoriesModel>,
@@ -233,6 +247,15 @@ impl LeftPanelView {
                 });
             }
         });
+
+        // Android: background thread watches USB via inotify (event-driven, no polling)
+        let android_state = Arc::new(Mutex::new(SharedAndroidState::default()));
+        {
+            let state = Arc::clone(&android_state);
+            std::thread::spawn(move || {
+                Self::usb_watcher_thread(state);
+            });
+        }
 
         let active_view = views.first().copied().unwrap_or(ToolPanelView::WarpDrive);
         let toolbelt_buttons = views
@@ -309,6 +332,7 @@ impl LeftPanelView {
             close_button_mouse_state: Default::default(),
             warp_drive_view,
             conversation_list_view,
+            android_state,
             active_view: active_view_state::new(active_view),
             toolbelt_buttons,
             active_pane_group: None,
@@ -822,6 +846,396 @@ impl LeftPanelView {
         .finish()
     }
 
+    /// Background thread: watch USB hotplug via inotify (Linux) or polling (other platforms).
+    fn usb_watcher_thread(state: Arc<Mutex<SharedAndroidState>>) {
+        Self::update_device_list(&state);
+
+        #[cfg(target_os = "linux")]
+        {
+            match Self::try_inotify_watch(&state) {
+                Ok(()) => return,
+                Err(e) => {
+                    log::warn!("Android: inotify unavailable ({e}), falling back to polling");
+                }
+            }
+        }
+
+        // Polling fallback (always used on Windows/macOS).
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            Self::update_device_list(&state);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_inotify_watch(state: &Arc<Mutex<SharedAndroidState>>) -> Result<(), String> {
+        use std::os::fd::AsRawFd;
+
+        let mut inotify =
+            inotify::Inotify::init().map_err(|e| format!("inotify init: {e}"))?;
+
+        // USB device nodes live in /dev/bus/usb/XXX/ subdirectories.
+        // Watch each subdirectory for CREATE/DELETE of device files.
+        let watch_mask =
+            inotify::WatchMask::CREATE | inotify::WatchMask::DELETE;
+        let mut watch_count = 0;
+        if let Ok(entries) = std::fs::read_dir("/dev/bus/usb") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    inotify
+                        .watches()
+                        .add(&path, watch_mask)
+                        .map_err(|e| format!("watch {}: {e}", path.display()))?;
+                    watch_count += 1;
+                }
+            }
+        }
+        if watch_count == 0 {
+            return Err("no /dev/bus/usb subdirectories found".into());
+        }
+
+        let fd = inotify.as_raw_fd();
+        let mut buffer = [0u8; 4096];
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+
+        loop {
+            if unsafe { libc::poll(&mut pollfd, 1, -1) } < 0 {
+                return Err("poll error".into());
+            }
+            let events = inotify
+                .read_events(&mut buffer)
+                .map_err(|e| format!("read_events: {e}"))?;
+            let count = events.count();
+            if count > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                Self::update_device_list(state);
+            }
+        }
+    }
+
+    /// Run `adb devices -l` and update shared state if device list changed.
+    fn update_device_list(state: &Arc<Mutex<SharedAndroidState>>) {
+        use crate::android::device::AdbDeviceService;
+        let devices: Vec<_> = AdbDeviceService::list_devices_cli()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| d.state == "device")
+            .collect();
+        if let Ok(mut s) = state.lock() {
+            if s.devices.len() != devices.len()
+                || s.devices.iter().zip(&devices).any(|(a, b)| a.serial != b.serial)
+            {
+                s.devices = devices.clone();
+                if s.selected_index >= s.devices.len().max(1) {
+                    s.selected_index = 0;
+                }
+            }
+        }
+        // Also sync to global LOGCAT_STATE so LogcatView can access the device list.
+        if let Ok(mut ls) = crate::android::logcat_state::LOGCAT_STATE.lock() {
+            ls.devices = devices.clone();
+        }
+    }
+
+    /// Runs the full build+install+launch pipeline and writes output to BUILD_STATE.
+    fn run_build_with_output(project_dir: std::path::PathBuf, device_serial: String) {
+        use crate::android::build_state::BUILD_STATE;
+        use crate::android::runner::AndroidRunService;
+
+        log::info!("[Android] run_build_with_output: dir={project_dir:?}, serial={device_serial}");
+
+        {
+            let mut state = BUILD_STATE.lock().unwrap();
+            state.lines.clear();
+            state.running = true;
+            state.success = None;
+            state.lines.push("Starting build...".into());
+        }
+
+        let runner = AndroidRunService::new(project_dir);
+        let gradle = runner.gradle();
+
+        // Step 1: assembleDebug (streaming)
+        {
+            let mut state = BUILD_STATE.lock().unwrap();
+            state.lines.push(if cfg!(windows) {
+                "> gradlew.bat assembleDebug".into()
+            } else {
+                "$ ./gradlew assembleDebug".into()
+            });
+        }
+        eprintln!("[Android] Starting assembleDebug (streaming)...");
+        match gradle.assemble_debug_streaming(|line| {
+            if let Ok(mut state) = BUILD_STATE.lock() {
+                state.lines.push(line);
+            }
+        }) {
+            Ok(r) => {
+                eprintln!("[Android] assembleDebug finished: success={}", r.success);
+                let mut state = BUILD_STATE.lock().unwrap();
+                if r.success {
+                    state.lines.push("assembleDebug: SUCCESS".into());
+                } else {
+                    state.lines.push(format!(
+                        "assembleDebug: FAILED (exit code {:?})",
+                        r.exit_code
+                    ));
+                    state.running = false;
+                    state.success = Some(false);
+                    eprintln!("[Android] assembleDebug FAILED, lines={}", state.lines.len());
+                    return;
+                }
+            }
+            Err(e) => {
+                let mut state = BUILD_STATE.lock().unwrap();
+                state.lines.push(format!("Gradle error: {e}"));
+                state.running = false;
+                state.success = Some(false);
+                eprintln!("[Android] Gradle error: {e}");
+                return;
+            }
+        }
+
+        // Step 2: Find APK
+        {
+            let mut state = BUILD_STATE.lock().unwrap();
+            state.lines.push("Looking for APK...".into());
+        }
+        let apk_path = match runner.find_apk() {
+            Ok(p) => {
+                let mut state = BUILD_STATE.lock().unwrap();
+                state.lines.push(format!("APK found: {}", p.display()));
+                p
+            }
+            Err(e) => {
+                let mut state = BUILD_STATE.lock().unwrap();
+                state.lines.push(format!("ERROR: {e}"));
+                state.running = false;
+                state.success = Some(false);
+                return;
+            }
+        };
+
+        // Step 3: Extract app identity
+        let identity = match runner.extract_app_identity(&apk_path) {
+            Ok(id) => {
+                let mut state = BUILD_STATE.lock().unwrap();
+                state.lines.push(format!("Package: {}", id.package_name));
+                if let Some(ref act) = id.launch_activity {
+                    state.lines.push(format!("Activity: {act}"));
+                }
+                // Store package name in LOGCAT_STATE for PID-based filtering.
+                if let Ok(mut ls) = crate::android::logcat_state::LOGCAT_STATE.lock() {
+                    ls.package_name = Some(id.package_name.clone());
+                }
+                id
+            }
+            Err(e) => {
+                let mut state = BUILD_STATE.lock().unwrap();
+                state.lines.push(format!("ERROR: {e}"));
+                state.running = false;
+                state.success = Some(false);
+                return;
+            }
+        };
+
+        // Step 4: Install APK
+        {
+            let mut state = BUILD_STATE.lock().unwrap();
+            state.lines.push(format!("Installing on {}...", device_serial));
+        }
+        if let Err(e) = runner.install_apk(&device_serial, &apk_path) {
+            let mut state = BUILD_STATE.lock().unwrap();
+            state.lines.push(format!("ADB install failed: {e}"));
+            state.running = false;
+            state.success = Some(false);
+            return;
+        }
+        {
+            let mut state = BUILD_STATE.lock().unwrap();
+            state.lines.push("Install: SUCCESS".into());
+        }
+
+        // Step 5: Launch app
+        {
+            let mut state = BUILD_STATE.lock().unwrap();
+            state.lines.push("Launching app...".into());
+        }
+        if let Err(e) = runner.launch_app(&device_serial, &identity) {
+            let mut state = BUILD_STATE.lock().unwrap();
+            state.lines.push(format!("Launch failed: {e}"));
+            state.running = false;
+            state.success = Some(false);
+            return;
+        }
+
+        let mut state = BUILD_STATE.lock().unwrap();
+        state.lines.push("App launched successfully!".into());
+        state.running = false;
+        state.success = Some(true);
+        eprintln!("[Android] Build pipeline completed successfully, lines={}", state.lines.len());
+    }
+
+    fn render_android_toolbar(&self, appearance: &Appearance, app: &AppContext) -> Box<dyn Element> {
+        use crate::android::gradle::GradleService;
+        use crate::features::FeatureFlag;
+
+        if !FeatureFlag::AndroidStudioMode.is_enabled() {
+            return Empty::new().finish();
+        }
+
+        let theme = appearance.theme();
+
+        // Read shared device state (lock is uncontended — only a 2s background thread)
+        let (has_device, run_serial, device_text) = {
+            let state = self.android_state.lock().unwrap();
+            let devices = &state.devices;
+            let selected_index = state.selected_index;
+            let has_device = !devices.is_empty();
+            let run_serial = if has_device {
+                devices[selected_index.min(devices.len() - 1)].serial.clone()
+            } else {
+                String::new()
+            };
+            let device_text = if has_device {
+                let d = &devices[selected_index.min(devices.len() - 1)];
+                let label = match (&d.model, &d.product) {
+                    (Some(m), _) if !m.is_empty() => m.clone(),
+                    (_, Some(p)) if !p.is_empty() => p.clone(),
+                    _ => d.serial.clone(),
+                };
+                if devices.len() > 1 {
+                    format!("{} ({} of {})", label, selected_index + 1, devices.len())
+                } else {
+                    label
+                }
+            } else {
+                "No device".to_string()
+            };
+            (has_device, run_serial, device_text)
+        };
+
+        let device_color = if has_device {
+            theme.main_text_color(theme.background())
+        } else {
+            theme.disabled_text_color(theme.background())
+        };
+
+        // Clickable device label — cycles through devices
+        let device_label_btn = appearance
+            .ui_builder()
+            .button(
+                warpui::ui_components::button::ButtonVariant::Text,
+                self.mouse_state_handles.android_device_label.clone(),
+            )
+            .with_style(warpui::ui_components::components::UiComponentStyles {
+                font_size: Some(11.),
+                padding: Some(Coords::default().left(4.).right(4.)),
+                font_color: Some(device_color.into()),
+                ..Default::default()
+            })
+            .with_text_label(device_text)
+            .build()
+            .on_click({
+                let state = Arc::clone(&self.android_state);
+                move |ctx, _, _| {
+                    if let Ok(mut s) = state.lock() {
+                        if s.devices.len() > 1 {
+                            s.selected_index = (s.selected_index + 1) % s.devices.len();
+                        }
+                    }
+                    ctx.notify();
+                }
+            })
+            .with_cursor(Cursor::PointingHand)
+            .finish();
+
+        // Project detection: use the current terminal's working directory
+        let cwd = self
+            .active_pane_group
+            .as_ref()
+            .and_then(|pg| pg.upgrade(app))
+            .and_then(|pg| {
+                self.working_directories_model
+                    .as_ref(app)
+                    .most_recent_directories_for_pane_group(pg.id())
+                    .and_then(|mut dirs| dirs.next().map(|d| d.path))
+            })
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let is_android = GradleService::new(cwd.clone()).has_gradlew();
+
+        // Try to read package name from AndroidManifest.xml if not yet known.
+        if is_android {
+            if let Ok(mut ls) = crate::android::logcat_state::LOGCAT_STATE.lock() {
+                if ls.package_name.is_none() {
+                    ls.package_name =
+                        crate::android::runner::read_package_name_from_manifest(&cwd);
+                }
+            }
+        }
+
+        let cwd_for_closure = cwd;
+        let run_serial_for_closure = run_serial.clone();
+        let can_run = has_device && is_android && !run_serial.is_empty();
+        eprintln!("[Android] render_android_toolbar: has_device={has_device}, is_android={is_android}, run_serial={run_serial}, can_run={can_run}");
+
+        // Run button
+        let play_btn = appearance
+            .ui_builder()
+            .button(
+                if can_run {
+                    warpui::ui_components::button::ButtonVariant::Accent
+                } else {
+                    warpui::ui_components::button::ButtonVariant::Secondary
+                },
+                self.mouse_state_handles.android_run_button.clone(),
+            )
+            .with_text_label("Run".to_owned())
+            .with_style(warpui::ui_components::components::UiComponentStyles {
+                font_size: Some(11.),
+                padding: Some(warpui::ui_components::components::Coords::default()
+                    .left(6.).right(6.).top(2.).bottom(2.)),
+                ..Default::default()
+            })
+            .build()
+            .on_click(move |ctx, _, _| {
+                eprintln!("[Android] Run button clicked, can_run={can_run}, has_device={has_device}, is_android={is_android}");
+                if !can_run {
+                    if !has_device {
+                        log::warn!("Android: no device connected, cannot run");
+                    } else if !is_android {
+                        log::warn!("Android: not an Android project, cannot run");
+                    }
+                    return;
+                }
+                let serial = run_serial_for_closure.clone();
+                let project_dir = cwd_for_closure.clone();
+                log::info!("[Android] Dispatching RunBuild action, project_dir={project_dir:?}, serial={serial}");
+                ctx.dispatch_typed_action(LeftPanelAction::RunBuild {
+                    project_dir,
+                    serial,
+                });
+            })
+            .finish();
+
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.);
+        row.add_child(play_btn);
+        row.add_child(device_label_btn);
+
+        Container::new(row.finish())
+            .with_padding_left(10.)
+            .with_padding_bottom(6.)
+            .with_padding_top(4.)
+            .finish()
+    }
+
     fn update_button_active_states(&mut self) {
         for button in &mut self.toolbelt_buttons {
             button.render_with_active_state = match &button.action {
@@ -835,6 +1249,7 @@ impl LeftPanelView {
                 LeftPanelAction::ConversationListView => {
                     self.active_view.get() == ToolPanelView::ConversationListView
                 }
+                LeftPanelAction::RunBuild { .. } => false,
             };
         }
     }
@@ -975,6 +1390,29 @@ impl LeftPanelView {
             LeftPanelAction::ConversationListView => {
                 active_view_state::set(self, ToolPanelView::ConversationListView, ctx);
                 send_telemetry_from_ctx!(TelemetryEvent::ConversationListViewOpened, ctx);
+            }
+            LeftPanelAction::RunBuild {
+                project_dir,
+                serial,
+            } => {
+                // Signal TerminalView to auto-open the build panel.
+                if let Ok(mut bs) = crate::android::build_state::BUILD_STATE.lock() {
+                    bs.should_open_panel = true;
+                }
+                let project_dir = project_dir.clone();
+                let serial = serial.clone();
+                ctx.spawn(
+                    async move {
+                        eprintln!("[Android] run_build_with_output started");
+                        Self::run_build_with_output(project_dir, serial);
+                        eprintln!("[Android] run_build_with_output finished");
+                    },
+                    |me, _, ctx| {
+                        eprintln!("[Android] build spawn callback on main thread");
+                        ctx.notify();
+                        let _ = me;
+                    },
+                );
             }
         }
     }
@@ -1177,6 +1615,7 @@ impl View for LeftPanelView {
 
             column
                 .with_child(header_row)
+                .with_child(self.render_android_toolbar(appearance, app))
                 .with_child(Shrinkable::new(1.0, content_area).finish())
                 .with_main_axis_size(MainAxisSize::Max)
                 .finish()

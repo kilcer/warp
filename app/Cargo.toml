@@ -55,6 +55,7 @@ test = false
 
 [dependencies]
 addr = "0.15.6"
+adb_client.workspace = true
 ai.workspace = true
 anyhow.workspace = true
 arrayvec.workspace = true
@@ -1003,4 +1004,7 @@ resources = ["assets/onboarding"]
 short_description = "The cloud-backed terminal for individuals and teams, developer build."
 
 [package.metadata.cargo-udeps.ignore]
-normal = ["embed_plist"]
+normal = ["embed_pllist"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+inotify = "0.11"

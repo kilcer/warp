@@ -38,47 +38,58 @@ impl AdbDeviceService {
             .unwrap_or(false)
     }
 
-    /// Lists all connected devices with basic information.
-    pub fn list_devices(&mut self) -> Result<Vec<AndroidDevice>, String> {
-        let devices = self
-            .server
-            .devices()
-            .map_err(|e| format!("Failed to list ADB devices: {e}"))?;
+    /// Lists all connected devices by running `adb devices -l` and parsing the
+    /// output. This is more reliable than the adb_client TCP crate because it
+    /// uses the same CLI that users manually invoke.
+    pub fn list_devices_cli() -> Result<Vec<AndroidDevice>, String> {
+        let output = Command::new("adb")
+            .args(["devices", "-l"])
+            .output()
+            .map_err(|e| format!("Failed to run adb: {e}"))?;
 
-        Ok(devices
-            .into_iter()
-            .map(|d| AndroidDevice {
-                serial: d.identifier,
-                state: d.state,
-                product: None,
-                model: None,
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut devices = Vec::new();
+
+        for line in stdout.lines().skip(1) {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 2 {
+                continue;
+            }
+
+            let serial = parts[0].to_string();
+            let state = parts[1].to_string();
+
+            let mut product = None;
+            let mut model = None;
+
+            for part in &parts[2..] {
+                if let Some(val) = part.strip_prefix("product:") {
+                    product = Some(val.to_string());
+                } else if let Some(val) = part.strip_prefix("model:") {
+                    model = Some(val.to_string());
+                }
+            }
+
+            devices.push(AndroidDevice {
+                serial,
+                state,
+                product,
+                model,
                 transport_id: None,
-            })
-            .collect())
-    }
+            });
+        }
 
-    /// Lists all connected devices with extended information (product, model).
-    pub fn list_devices_detailed(&mut self) -> Result<Vec<AndroidDevice>, String> {
-        let devices = self
-            .server
-            .devices_long()
-            .map_err(|e| format!("Failed to list ADB devices: {e}"))?;
-
-        Ok(devices
-            .into_iter()
-            .map(|d| AndroidDevice {
-                serial: d.identifier,
-                state: d.state,
-                product: d.product,
-                model: d.model,
-                transport_id: d.transport_id,
-            })
-            .collect())
+        Ok(devices)
     }
 
     /// Checks if the ADB server is reachable and at least one device is connected.
-    pub fn has_devices(&mut self) -> Result<bool, String> {
-        let devices = self.list_devices()?;
+    pub fn has_devices() -> Result<bool, String> {
+        let devices = Self::list_devices_cli()?;
         Ok(!devices.is_empty())
     }
 }

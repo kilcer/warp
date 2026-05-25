@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use super::{
     about_page::AboutPageView,
     ai_page::{AISettingsPageAction, AISettingsPageView},
+    android_studio_page::AndroidStudioPageView,
     appearance_page::AppearanceSettingsPageView,
     billing_and_usage_page::BillingAndUsagePageView,
     billing_and_usage_page_v2::BillingAndUsagePageV2View,
@@ -125,6 +126,7 @@ pub enum SettingsPageViewHandle {
     BillingAndUsageV2(ViewHandle<BillingAndUsagePageV2View>),
     MCPServers(ViewHandle<MCPServersSettingsPageView>),
     WarpDrive(ViewHandle<WarpDriveSettingsPageView>),
+    AndroidStudio(ViewHandle<AndroidStudioPageView>),
 }
 
 impl SettingsPageViewHandle {
@@ -149,6 +151,7 @@ impl SettingsPageViewHandle {
             BillingAndUsageV2(view_handle) => ChildView::new(view_handle).finish(),
             MCPServers(view_handle) => ChildView::new(view_handle).finish(),
             WarpDrive(view_handle) => ChildView::new(view_handle).finish(),
+            AndroidStudio(view_handle) => ChildView::new(view_handle).finish(),
         }
     }
 }
@@ -156,6 +159,12 @@ impl SettingsPageViewHandle {
 impl From<ViewHandle<MCPServersSettingsPageView>> for SettingsPageViewHandle {
     fn from(view_handle: ViewHandle<MCPServersSettingsPageView>) -> Self {
         SettingsPageViewHandle::MCPServers(view_handle)
+    }
+}
+
+impl From<ViewHandle<AndroidStudioPageView>> for SettingsPageViewHandle {
+    fn from(view_handle: ViewHandle<AndroidStudioPageView>) -> Self {
+        SettingsPageViewHandle::AndroidStudio(view_handle)
     }
 }
 

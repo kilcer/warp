@@ -46,7 +46,7 @@ impl AndroidRunService {
     }
 
     /// Finds the debug APK in the typical Gradle output location.
-    fn find_apk(&self) -> Result<PathBuf, String> {
+    pub fn find_apk(&self) -> Result<PathBuf, String> {
         let apk_dir = self
             .gradle
             .project_dir()
@@ -77,7 +77,7 @@ impl AndroidRunService {
     }
 
     /// Extracts the app's package name and launchable activity using aapt.
-    fn extract_app_identity(&self, apk_path: &Path) -> Result<AppIdentity, String> {
+    pub fn extract_app_identity(&self, apk_path: &Path) -> Result<AppIdentity, String> {
         let output = Command::new("aapt")
             .args(["dump", "badging", &apk_path.to_string_lossy()])
             .output()
@@ -139,7 +139,7 @@ impl AndroidRunService {
     }
 
     /// Installs the APK to the specified device.
-    fn install_apk(&self, device_serial: &str, apk_path: &Path) -> Result<(), String> {
+    pub fn install_apk(&self, device_serial: &str, apk_path: &Path) -> Result<(), String> {
         let output = Command::new("adb")
             .args([
                 "-s",
@@ -161,7 +161,7 @@ impl AndroidRunService {
     }
 
     /// Launches the app on the specified device using `am start`.
-    fn launch_app(&self, device_serial: &str, identity: &AppIdentity) -> Result<(), String> {
+    pub fn launch_app(&self, device_serial: &str, identity: &AppIdentity) -> Result<(), String> {
         let component = match &identity.launch_activity {
             Some(activity) if activity.starts_with('.') => {
                 // ".MainActivity" → "com.example.app/.MainActivity"
@@ -203,6 +203,88 @@ impl AndroidRunService {
     pub fn gradle(&self) -> &GradleService {
         &self.gradle
     }
+}
+
+/// Reads the package name (namespace) from the Android project.
+/// Tries in order:
+/// 1. `app/build.gradle` → `namespace 'com.xxx'` or `namespace "com.xxx"`
+/// 2. `app/build.gradle.kts` → `namespace = "com.xxx"`
+/// 3. `app/src/main/AndroidManifest.xml` → `package="com.xxx"` (older AGP)
+pub fn read_package_name_from_manifest(project_dir: &Path) -> Option<String> {
+    // Try build.gradle (Groovy)
+    if let Some(ns) = read_namespace_from_gradle(&project_dir.join("app/build.gradle")) {
+        return Some(ns);
+    }
+    // Try build.gradle.kts (Kotlin DSL)
+    if let Some(ns) = read_namespace_from_gradle_kts(&project_dir.join("app/build.gradle.kts")) {
+        return Some(ns);
+    }
+    // Fallback: AndroidManifest.xml (older projects)
+    read_package_from_android_manifest(project_dir)
+}
+
+/// Reads `namespace` from a Groovy build.gradle file.
+fn read_namespace_from_gradle(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    extract_namespace(&content)
+}
+
+/// Reads `namespace` from a Kotlin DSL build.gradle.kts file.
+fn read_namespace_from_gradle_kts(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    extract_namespace(&content)
+}
+
+/// Extracts namespace value from gradle file content.
+fn extract_namespace(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Groovy: namespace 'com.xxx' or namespace "com.xxx"
+        // Kotlin: namespace = "com.xxx" or namespace = "com.xxx"
+        if !trimmed.starts_with("namespace") {
+            continue;
+        }
+        let rest = trimmed.strip_prefix("namespace")?.trim();
+        // Strip leading = for Kotlin DSL
+        let rest = rest.strip_prefix('=').unwrap_or(rest).trim();
+        // Extract quoted value
+        if let Some(v) = rest.strip_prefix('"') {
+            if let Some(end) = v.find('"') {
+                let val = &v[..end];
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        } else if let Some(v) = rest.strip_prefix('\'') {
+            if let Some(end) = v.find('\'') {
+                let val = &v[..end];
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Reads `package="..."` from AndroidManifest.xml (older AGP).
+fn read_package_from_android_manifest(project_dir: &Path) -> Option<String> {
+    let manifest_path = project_dir.join("app/src/main/AndroidManifest.xml");
+    let content = std::fs::read_to_string(&manifest_path).ok()?;
+    for line in content.lines() {
+        if !line.contains("<manifest") {
+            continue;
+        }
+        for part in line.split_whitespace() {
+            if let Some(rest) = part.strip_prefix("package=") {
+                let value = rest.trim_matches('"').trim_matches('\'');
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 // ========== Test helpers ==========

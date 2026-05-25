@@ -895,7 +895,11 @@ static USER_PREFERENCE_MAP: [AtomicTriState; cardinality::<FeatureFlag>()] =
 static FEATURES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Features used in debugging.
-pub const DEBUG_FLAGS: &[FeatureFlag] = &[FeatureFlag::DebugMode, FeatureFlag::RuntimeFeatureFlags];
+pub const DEBUG_FLAGS: &[FeatureFlag] = &[
+    FeatureFlag::DebugMode,
+    FeatureFlag::RuntimeFeatureFlags,
+    FeatureFlag::AndroidStudioMode,
+];
 
 /// Features enabled for the development team.  The expectation is that, over
 /// time, these will move on to PREVIEW_FLAGS before being launched.
@@ -951,10 +955,6 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::SoloUserByok,
     FeatureFlag::CustomInferenceEndpoints,
     FeatureFlag::RemoteCodebaseIndexing,
-
-    // Enables Android Studio-like features in Warp:
-    // device management, gradle commands, logcat, and screen mirroring.
-    FeatureFlag::AndroidStudioMode,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Warp).

@@ -467,6 +467,10 @@ pub enum TerminalAction {
     /// Toggle the rich input editor for composing a prompt to send to a CLI agent.
     /// Triggered by Ctrl-G when a CLI agent is detected, or from the footer button.
     ToggleCLIAgentRichInput,
+    /// Toggle the Android build output bottom panel.
+    ToggleAndroidBuildPanel,
+    /// Toggle the Android logcat bottom panel.
+    ToggleAndroidLogcatPanel,
 }
 
 // Manually implementing Debug to avoid leaking sensitive information in logs
@@ -746,6 +750,8 @@ impl fmt::Debug for TerminalAction {
             KillAgentConversation { .. } => write!(f, "KillAgentConversation"),
             ToggleSessionRecording => write!(f, "ToggleSessionRecording"),
             ToggleCLIAgentRichInput => write!(f, "ToggleCLIAgentRichInput"),
+            ToggleAndroidBuildPanel => write!(f, "ToggleAndroidBuildPanel"),
+            ToggleAndroidLogcatPanel => write!(f, "ToggleAndroidLogcatPanel"),
         }
     }
 }

@@ -3,6 +3,7 @@
 
 mod ai;
 mod alloc;
+mod android;
 mod antivirus;
 #[cfg(target_os = "macos")]
 mod app_menus;

@@ -2859,6 +2859,26 @@ pub struct TerminalView {
     /// Mouse state handle for the ambient agent cancel button in the pane header.
     ambient_agent_cancel_mouse_state: warpui::elements::MouseStateHandle,
 
+    /// Android build output view (rendered as bottom panel).
+    android_build_view: ViewHandle<crate::android::build_view::BuildView>,
+    /// Android logcat output view (rendered as bottom panel).
+    android_logcat_view: ViewHandle<crate::android::logcat_view::LogcatView>,
+    /// Whether the Android build bottom panel is open.
+    android_build_panel_open: bool,
+    /// Whether the Android logcat bottom panel is open.
+    android_logcat_panel_open: bool,
+    /// Handle to the background logcat streaming thread, so we can stop it.
+    android_logcat_thread: std::sync::Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// Handle to the adb logcat child process, so we can kill it to stop streaming.
+    android_logcat_child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
+    /// Mouse state handles for Android bottom toolbar toggle buttons.
+    android_build_toggle_mouse_state: warpui::elements::MouseStateHandle,
+    android_logcat_toggle_mouse_state: warpui::elements::MouseStateHandle,
+    /// Epoch counter for the build output polling loop (incremented to cancel).
+    build_poll_epoch: usize,
+    /// Last known logcat serial — used to detect device selection changes and restart logcat.
+    last_logcat_serial: Option<String>,
+
     /// First-time cloud agent setup view (full-screen overlay for creating initial environment).
     first_time_cloud_agent_setup_view: ViewHandle<ambient_agent::FirstTimeCloudAgentSetupView>,
 
@@ -4186,6 +4206,16 @@ impl TerminalView {
             }
         });
 
+        // Android build output view for bottom panel.
+        let android_build_view = ctx.add_typed_action_view(|_ctx| {
+            crate::android::build_view::BuildView::new()
+        });
+
+        // Android logcat output view for bottom panel.
+        let android_logcat_view = ctx.add_typed_action_view(|ctx| {
+            crate::android::logcat_view::LogcatView::new(ctx)
+        });
+
         let window_id = ctx.window_id();
         let mut terminal_view = Self {
             model,
@@ -4327,6 +4357,16 @@ impl TerminalView {
             #[cfg(not(target_arch = "wasm32"))]
             conversation_details_panel_toggle_mouse_state: Default::default(),
             ambient_agent_cancel_mouse_state: Default::default(),
+            android_build_view,
+            android_logcat_view,
+            android_build_panel_open: false,
+            android_logcat_panel_open: false,
+            android_build_toggle_mouse_state: Default::default(),
+            android_logcat_toggle_mouse_state: Default::default(),
+            build_poll_epoch: 0,
+            last_logcat_serial: None,
+            android_logcat_thread: Default::default(),
+            android_logcat_child: Default::default(),
             active_init_project_model: None,
             is_pending_aws_login: false,
             manual_pty_shutdown_requested: false,
@@ -4677,6 +4717,9 @@ impl TerminalView {
         }
 
         send_telemetry_from_ctx!(TelemetryEvent::SessionCreation, ctx);
+
+        // Start a lightweight poll to detect Run button clicks (auto-open build panel).
+        terminal_view.start_build_poll(ctx);
 
         terminal_view
     }
@@ -25233,7 +25276,9 @@ impl TypedActionView for TerminalView {
             | StopAgentConversation { .. }
             | KillAgentConversation { .. }
             | ToggleCLIAgentRichInput
-            | ToggleSessionRecording => Empty,
+            | ToggleSessionRecording
+            | ToggleAndroidBuildPanel
+            | ToggleAndroidLogcatPanel => Empty,
         }
     }
 
@@ -26314,7 +26359,228 @@ impl TypedActionView for TerminalView {
                     self.open_cli_agent_rich_input(CLIAgentInputEntrypoint::CtrlG, ctx);
                 }
             }
+            ToggleAndroidBuildPanel => {
+                self.android_build_panel_open = !self.android_build_panel_open;
+                if self.android_build_panel_open {
+                    self.android_logcat_panel_open = false;
+                    self.stop_logcat();
+                    self.start_build_poll(ctx);
+                } else {
+                    self.stop_build_poll();
+                }
+                ctx.notify();
+            }
+            ToggleAndroidLogcatPanel => {
+                self.android_logcat_panel_open = !self.android_logcat_panel_open;
+                if self.android_logcat_panel_open {
+                    self.android_build_panel_open = false;
+                    self.stop_build_poll();
+                    self.start_logcat();
+                    self.start_build_poll(ctx);
+                } else {
+                    self.stop_logcat();
+                    self.stop_build_poll();
+                }
+                ctx.notify();
+            }
         }
+    }
+}
+
+impl TerminalView {
+    /// Starts streaming logcat output from the connected device.
+    fn start_logcat(&self) {
+        use crate::android::logcat_state::LOGCAT_STATE;
+        use std::io::BufRead;
+        use std::io::BufReader;
+        use std::process::{Command, Stdio};
+
+        // Clear existing entries and mark as running.
+        let serial = {
+            let mut state = LOGCAT_STATE.lock().unwrap();
+            state.entries.clear();
+            state.running = true;
+            state.selected_serial.clone()
+        };
+
+        let child_handle = self.android_logcat_child.clone();
+        let thread_handle = self.android_logcat_thread.clone();
+
+        let join_handle = std::thread::spawn(move || {
+            let mut cmd = Command::new("adb");
+            if let Some(s) = &serial {
+                cmd.args(["-s", s]);
+            }
+            cmd.args(["logcat", "-v", "threadtime"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    let mut state = LOGCAT_STATE.lock().unwrap();
+                    state.entries.push(format!("Failed to start adb logcat: {e}"));
+                    state.running = false;
+                    return;
+                }
+            };
+
+            // Take stdout for reading before storing child for kill access.
+            let stdout = child.stdout.take().expect("No stdout from adb logcat");
+            // Store the child (without stdout) so stop_logcat can kill it.
+            *child_handle.lock().unwrap() = Some(child);
+
+            let reader = BufReader::new(stdout);
+
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        let mut state = LOGCAT_STATE.lock().unwrap();
+                        state.entries.push(line);
+                        if state.entries.len() > 500 {
+                            let drain_to = state.entries.len() - 500;
+                            state.entries.drain(0..drain_to);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let mut state = LOGCAT_STATE.lock().unwrap();
+            state.running = false;
+        });
+
+        *thread_handle.lock().unwrap() = Some(join_handle);
+    }
+
+    /// Stops the logcat streaming thread.
+    fn stop_logcat(&self) {
+        use crate::android::logcat_state::LOGCAT_STATE;
+
+        // Kill the adb logcat child process.
+        if let Some(mut child) = self.android_logcat_child.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        // Wait for the thread to finish.
+        if let Some(handle) = self.android_logcat_thread.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+
+        // Mark as stopped.
+        let mut state = LOGCAT_STATE.lock().unwrap();
+        state.running = false;
+    }
+
+    /// Starts a polling loop that periodically checks BUILD_STATE and LOGCAT_STATE
+    /// for new output, re-rendering TerminalView so the build/logcat panels update.
+    fn start_build_poll(&mut self, ctx: &mut ViewContext<Self>) {
+        self.build_poll_epoch += 1;
+        self.poll_build_state(self.build_poll_epoch, ctx);
+    }
+
+    /// Cancels the build state polling loop.
+    fn stop_build_poll(&mut self) {
+        self.build_poll_epoch += 1;
+    }
+
+    /// Recursive polling function: waits 300ms, then checks if the build/logcat
+    /// panel is still open and data is still streaming. If so, re-renders and
+    /// schedules the next poll.
+    fn poll_build_state(&mut self, poll_epoch: usize, ctx: &mut ViewContext<Self>) {
+        if poll_epoch != self.build_poll_epoch {
+            return;
+        }
+        ctx.spawn(
+            async move {
+                warpui::r#async::Timer::after(std::time::Duration::from_millis(300)).await;
+            },
+            move |me, _, ctx| {
+                // Check if Run was clicked and we need to auto-open the build panel.
+                if !me.android_build_panel_open {
+                    if let Ok(mut bs) = crate::android::build_state::BUILD_STATE.lock() {
+                        if bs.should_open_panel {
+                            bs.should_open_panel = false;
+                            me.android_build_panel_open = true;
+                            me.android_logcat_panel_open = false;
+                            me.stop_logcat();
+                            ctx.notify();
+                        }
+                    }
+                }
+
+                if me.android_build_panel_open || me.android_logcat_panel_open {
+                    // Explicitly notify child views so they re-render and auto-scroll.
+                    if me.android_build_panel_open {
+                        me.android_build_view.update(ctx, |bv, ctx| {
+                            bv.auto_scroll(ctx);
+                            ctx.notify();
+                        });
+                    }
+                    if me.android_logcat_panel_open {
+                        // Detect device selection change and restart logcat if needed.
+                        let current_serial = {
+                            let ls = crate::android::logcat_state::LOGCAT_STATE.lock().unwrap();
+                            ls.selected_serial.clone()
+                        };
+                        if current_serial != me.last_logcat_serial {
+                            me.last_logcat_serial = current_serial;
+                            me.stop_logcat();
+                            me.start_logcat();
+                        }
+                        me.android_logcat_view.update(ctx, |lv, ctx| {
+                            lv.auto_scroll(ctx);
+                            ctx.notify();
+                        });
+                    }
+                }
+                // Always continue polling so we can detect should_open_panel.
+                me.poll_build_state(poll_epoch, ctx);
+            },
+        );
+    }
+
+    fn render_android_toolbar_toggles(&self, appearance: &Appearance) -> Box<dyn Element> {
+        use crate::ui_components::buttons::icon_button;
+        use crate::ui_components::icons;
+
+        let build_btn = icon_button(
+            appearance,
+            icons::Icon::Play,
+            self.android_build_panel_open,
+            self.android_build_toggle_mouse_state.clone(),
+        )
+        .build()
+        .on_click(|ctx, _, _| {
+            ctx.dispatch_typed_action(TerminalAction::ToggleAndroidBuildPanel);
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish();
+
+        let logcat_btn = icon_button(
+            appearance,
+            icons::Icon::TextInput,
+            self.android_logcat_panel_open,
+            self.android_logcat_toggle_mouse_state.clone(),
+        )
+        .build()
+        .on_click(|ctx, _, _| {
+            ctx.dispatch_typed_action(TerminalAction::ToggleAndroidLogcatPanel);
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish();
+
+        Container::new(
+            Flex::row()
+                .with_child(build_btn)
+                .with_child(logcat_btn)
+                .with_spacing(4.)
+                .finish(),
+        )
+        .with_padding_left(10.)
+        .with_padding_bottom(4.)
+        .finish()
     }
 }
 
@@ -26404,6 +26670,28 @@ impl View for TerminalView {
                     };
 
                     column.add_child(Shrinkable::new(1., output_area).finish());
+
+                    // Android build/logcat bottom panel.
+                    if self.android_build_panel_open || self.android_logcat_panel_open {
+                        let panel_content = if self.android_build_panel_open {
+                            ChildView::new(&self.android_build_view).finish()
+                        } else if self.android_logcat_panel_open {
+                            ChildView::new(&self.android_logcat_view).finish()
+                        } else {
+                            Empty::new().finish()
+                        };
+                        column.add_child(
+                            Container::new(ConstrainedBox::new(panel_content)
+                                .with_height(200.)
+                                .finish())
+                            .with_border(warpui::elements::Border::top(1.0)
+                                .with_border_fill(appearance.theme().outline()))
+                            .finish(),
+                        );
+                    }
+
+                    // Android bottom toolbar toggle buttons.
+                    column.add_child(self.render_android_toolbar_toggles(appearance));
 
                     if model.is_alt_screen_active()
                         && self.should_render_use_agent_footer(&model, app)

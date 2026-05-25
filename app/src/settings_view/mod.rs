@@ -26,6 +26,7 @@ use crate::{
 };
 use about_page::AboutPageView;
 use ai_page::{AISettingsPageAction, AISettingsPageEvent, AISettingsPageView, AISubpage};
+use android_studio_page::AndroidStudioPageView;
 use appearance_page::{AppearancePageAction, AppearanceSettingsPageView};
 use billing_and_usage_page::{BillingAndUsagePageEvent, BillingAndUsagePageView};
 use billing_and_usage_page_v2::BillingAndUsagePageV2View;
@@ -75,6 +76,7 @@ use warpui::{
 };
 
 mod about_page;
+mod android_studio_page;
 mod admin_actions;
 mod agent_assisted_environment_modal;
 mod ai_page;
@@ -259,6 +261,7 @@ pub enum SettingsSection {
     // ── Cloud platform umbrella subpages ──
     CloudEnvironments,
     OzCloudAPIKeys,
+    AndroidStudio,
 }
 
 use crate::util::bindings::custom_tag_to_keystroke;
@@ -1012,6 +1015,7 @@ macro_rules! update_page {
             SettingsPageViewHandle::BillingAndUsageV2(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::MCPServers(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::WarpDrive(handle) => $ctx.update_view(handle, $update),
+            SettingsPageViewHandle::AndroidStudio(handle) => $ctx.update_view(handle, $update),
         }
     };
 }
@@ -1180,6 +1184,9 @@ impl SettingsView {
             me.handle_mcp_servers_page_event(event, ctx);
         });
 
+        // Android Studio page
+        let android_studio_page_handle = ctx.add_typed_action_view(AndroidStudioPageView::new);
+
         let font_family = Appearance::as_ref(ctx).ui_font_family();
         let search_editor = ctx.add_typed_action_view(|ctx| {
             let options = SingleLineEditorOptions {
@@ -1229,6 +1236,7 @@ impl SettingsView {
             SettingsPage::new(environments_page_handle.clone()),
             SettingsPage::new(privacy_page_handle),
             SettingsPage::new(about_page_handle),
+            SettingsPage::new(android_studio_page_handle),
         ]);
 
         // Build sidebar nav items. AI page is presented as an "Agents" umbrella
@@ -1263,6 +1271,7 @@ impl SettingsView {
             SettingsNavItem::Page(SettingsSection::SharedBlocks),
             SettingsNavItem::Page(SettingsSection::WarpDrive),
             SettingsNavItem::Page(SettingsSection::Privacy),
+            SettingsNavItem::Page(SettingsSection::AndroidStudio),
             SettingsNavItem::Page(SettingsSection::About),
         ];
 
@@ -2018,6 +2027,7 @@ impl SettingsView {
             SettingsPageViewHandle::MCPServers(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::Code(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::WarpDrive(v) => v.as_ref(app).should_render(app),
+            SettingsPageViewHandle::AndroidStudio(v) => v.as_ref(app).should_render(app),
         }
     }
 
