@@ -9,7 +9,8 @@ pub mod test_utils;
 mod view_impl;
 mod viewer;
 
-#[cfg(not(target_family = "wasm"))]
-pub(in crate::terminal::view) use conversation_ended_tombstone_view::ConversationEndedTombstoneEvent;
-pub(in crate::terminal::view) use conversation_ended_tombstone_view::ConversationEndedTombstoneView;
-pub(in crate::terminal::view) use {adapter::Adapter as SharedSessionAdapter, viewer::Viewer};
+pub(in crate::terminal::view) use adapter::Adapter as SharedSessionAdapter;
+pub(in crate::terminal::view) use conversation_ended_tombstone_view::{
+    ConversationEndedTombstoneEvent, ConversationEndedTombstoneView,
+};
+pub(in crate::terminal::view) use viewer::Viewer;

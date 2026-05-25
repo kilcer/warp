@@ -9,15 +9,14 @@ use warp_cli::agent::Harness;
 use warp_core::report_error;
 use warp_core::ui::theme::WarpTheme;
 use warpui::color::ColorU;
+use warpui::{SingletonEntity, View, ViewContext};
 
+use super::AmbientAgentTaskId;
 use crate::ai::artifacts::{deserialize_artifacts, Artifact};
 use crate::server::server_api::ServerApiProvider;
 use crate::ui_components::icons::Icon;
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
-use warpui::{SingletonEntity, View, ViewContext};
-
-use super::AmbientAgentTaskId;
 
 /// Runtime configuration snapshot for agent execution.
 ///
@@ -79,6 +78,16 @@ pub struct HarnessConfig {
     /// The model to use with this harness. None means use the harness default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    /// Optional reasoning level for harnesses that support it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_level: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HarnessModelConfig {
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_level: Option<String>,
 }
 
 impl HarnessConfig {
@@ -87,7 +96,18 @@ impl HarnessConfig {
         Self {
             harness_type,
             model_id: None,
+            reasoning_level: None,
         }
+    }
+
+    pub fn model_config(&self) -> Option<HarnessModelConfig> {
+        self.model_id
+            .as_ref()
+            .filter(|id| !id.is_empty())
+            .map(|model_id| HarnessModelConfig {
+                model_id: model_id.clone(),
+                reasoning_level: self.reasoning_level.clone(),
+            })
     }
 }
 
@@ -339,9 +359,35 @@ pub struct TaskAttachment {
     pub mime_type: String,
 }
 
+/// Returns the trimmed orchestrator agent name, or `None` when empty / whitespace-only.
+pub fn normalize_orchestrator_agent_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 impl AmbientAgentTask {
     pub fn run_id(&self) -> AmbientAgentTaskId {
         self.task_id
+    }
+
+    /// Returns the short label for this task: trimmed `agent_config_snapshot.name`,
+    /// trimmed `title`, or `"Agent"`.
+    pub fn display_name(&self) -> &str {
+        if let Some(name) = self
+            .agent_config_snapshot
+            .as_ref()
+            .and_then(|c| c.name.as_deref())
+        {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
+        let trimmed_title = self.title.trim();
+        if !trimmed_title.is_empty() {
+            return trimmed_title;
+        }
+        "Agent"
     }
 
     pub fn conversation_id(&self) -> Option<&str> {

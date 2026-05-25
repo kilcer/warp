@@ -9,19 +9,16 @@ mod snapshot;
 pub mod store_client;
 mod sync_client;
 
-use std::{
-    ops::Range,
-    path::{Path, PathBuf},
-    time::Duration,
-};
-pub use sync_client::SyncTask;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub use codebase_index::{CodebaseIndex, RetrievalID, SyncProgress};
+pub use fragment_metadata::FragmentMetadata;
 pub use merkle_tree::{ContentHash, NodeHash};
 pub use snapshot::SnapshotStorage;
-
-pub use fragment_metadata::FragmentMetadata;
 use string_offset::ByteOffset;
+pub use sync_client::SyncTask;
 use thiserror::Error;
 use warp_graphql::queries::rerank_fragments::FragmentLocationInput;
 
@@ -92,6 +89,7 @@ pub enum EmbeddingConfig {
     Voyage3_5_Lite_512,
     #[default]
     Voyage3_5_512,
+    Voyage4_512,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +118,9 @@ impl From<EmbeddingConfig> for warp_graphql::full_source_code_embedding::Embeddi
             EmbeddingConfig::Voyage3_5_Lite_512 => {
                 warp_graphql::full_source_code_embedding::EmbeddingConfig::Voyage35Lite512
             }
+            EmbeddingConfig::Voyage4_512 => {
+                warp_graphql::full_source_code_embedding::EmbeddingConfig::Voyage4512
+            }
         }
     }
 }
@@ -142,6 +143,9 @@ impl TryFrom<warp_graphql::full_source_code_embedding::EmbeddingConfig> for Embe
             }
             warp_graphql::full_source_code_embedding::EmbeddingConfig::Voyage35512 => {
                 Ok(Self::Voyage3_5_512)
+            }
+            warp_graphql::full_source_code_embedding::EmbeddingConfig::Voyage4512 => {
+                Ok(Self::Voyage4_512)
             }
         }
     }

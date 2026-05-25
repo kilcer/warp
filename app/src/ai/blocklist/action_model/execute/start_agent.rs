@@ -1,8 +1,12 @@
 use std::collections::HashMap;
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use warp_cli::agent::Harness;
+use warp_core::features::FeatureFlag;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
+use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::agent::{
     AIAgentAction, AIAgentActionResultType, AIAgentActionType, LifecycleEventType,
@@ -12,10 +16,6 @@ use crate::ai::blocklist::orchestration_event_streamer::OrchestrationEventStream
 use crate::ai::blocklist::orchestration_events::OrchestrationEventService;
 use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use crate::ai::local_child_harnesses::local_child_harness_disabled_message;
-use warp_cli::agent::Harness;
-use warp_core::features::FeatureFlag;
-
-use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
 
 /// Per-request outcome of a StartAgent dispatch.
 #[derive(Debug, Clone)]
@@ -134,6 +134,8 @@ impl StartAgentExecutor {
                         streamer.register_watched_run_id(pending.parent_conversation_id, id, ctx);
                     });
                 } else {
+                    // TODO(QUALITY-733): Remove the legacy v1 orchestration event-service path
+                    // once all orchestration startup events use v2 event streaming.
                     OrchestrationEventService::handle(ctx).update(ctx, |svc, ctx| {
                         svc.emit_child_startup_started(child_conversation_id, ctx);
                     });
@@ -147,6 +149,8 @@ impl StartAgentExecutor {
                     "Server did not assign an agent identifier".to_string(),
                 ));
                 if !FeatureFlag::OrchestrationV2.is_enabled() {
+                    // TODO(QUALITY-733): Remove the legacy v1 orchestration event-service path
+                    // once all orchestration startup errors use v2 event streaming.
                     OrchestrationEventService::handle(ctx).update(ctx, |svc, ctx| {
                         svc.emit_child_startup_errored(
                             child_conversation_id,
@@ -174,6 +178,8 @@ impl StartAgentExecutor {
             .sender
             .try_send(StartAgentOutcome::Error(error_msg.clone()));
         if !FeatureFlag::OrchestrationV2.is_enabled() {
+            // TODO(QUALITY-733): Remove the legacy v1 orchestration event-service path once all
+            // orchestration lifecycle errors use v2 event streaming.
             OrchestrationEventService::handle(ctx).update(ctx, |svc, ctx| {
                 svc.emit_child_startup_errored(
                     child_conversation_id,
@@ -265,7 +271,8 @@ impl StartAgentExecutor {
             | BlocklistAIHistoryEvent::UpdatedConversationArtifacts { .. }
             | BlocklistAIHistoryEvent::ConversationOwnershipTransferred { .. } => {}
             BlocklistAIHistoryEvent::OrchestrationConfigUpdated { .. }
-            | BlocklistAIHistoryEvent::ConversationUsageMetadataUpdated { .. } => {}
+            | BlocklistAIHistoryEvent::ConversationUsageMetadataUpdated { .. }
+            | BlocklistAIHistoryEvent::LocalSharedSessionEstablished { .. } => {}
         }
     }
 
@@ -306,21 +313,36 @@ impl StartAgentExecutor {
                 harness_type: None,
                 model_id,
             } => {
-                // Legacy local Oz child agents do not use
-                // StartAgentRequest.parent_run_id. Instead, the child
-                // conversation is linked back to its parent on the first
-                // request via Request.metadata.parent_agent_id, sourced
-                // from the conversation's versioned orchestration_agent_id()
-                // (run_id in v2, server conversation token in v1). Remote
-                // child agents and local third-party harness children need
-                // parent_run_id here because their run is spawned before that
-                // first child request exists.
+                // Oz local children resolve their parent's run id from the
+                // parent conversation. This mirrors the third-party-harness
+                // and remote-child branches below; the child task row is
+                // created eagerly at dispatch (see
+                // `launch_local_no_harness_child`) using this value as the
+                // `parent_run_id` on `CreateAgentTask`. Bail out if the
+                // parent has no `run_id` yet — the eager-create path has no
+                // late-binding fallback (the pre-change lazy path would have
+                // linked via `Request.metadata.parent_agent_id` later), so
+                // proceeding would mint an orphan child with no server-side
+                // parent linkage.
+                let parent_run_id = BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&parent_conversation_id)
+                    .and_then(|conversation| conversation.run_id());
+                let Some(parent_run_id) = parent_run_id else {
+                    return ActionExecution::Sync(AIAgentActionResultType::StartAgent(
+                        StartAgentResult::Error {
+                            error:
+                                "Local Oz child agents require the parent run_id to be available."
+                                    .to_string(),
+                            version,
+                        },
+                    ));
+                };
                 (
                     StartAgentExecutionMode::Local {
                         harness_type: None,
                         model_id,
                     },
-                    None,
+                    Some(parent_run_id),
                 )
             }
             StartAgentExecutionMode::Local {

@@ -1,6 +1,12 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use persistence::model::ConversationUsageMetadata;
+use warp_cli::agent::Harness;
+use warp_graphql::object_permissions::AccessLevel;
+use warpui::{App, EntityId, SingletonEntity};
 
+use super::*;
 use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::{AIAgentHarness, ServerAIConversationMetadata};
 use crate::ai::agent_conversations_model::AgentConversationsModel;
@@ -21,12 +27,6 @@ use crate::workspaces::team::Team;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::workspaces::workspace::Workspace;
 use crate::FeatureFlag;
-use std::sync::Arc;
-use warp_cli::agent::Harness;
-use warp_graphql::object_permissions::AccessLevel;
-use warpui::{App, EntityId, SingletonEntity};
-
-use super::*;
 
 const CONVERSATION_TOKEN: &str = "server-conversation-token";
 
@@ -222,6 +222,7 @@ impl AmbientAgentTaskTestExt for AmbientAgentTask {
             harness: (harness != Harness::Oz).then_some(HarnessConfig {
                 harness_type: harness,
                 model_id: None,
+                reasoning_level: None,
             }),
             ..Default::default()
         });

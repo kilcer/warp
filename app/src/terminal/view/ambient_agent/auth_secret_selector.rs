@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use pathfinder_geometry::vector::vec2f;
+use settings::Setting as _;
 use warp_cli::agent::Harness;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors;
@@ -14,8 +15,6 @@ use warpui::{
     AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     ViewHandle,
 };
-
-use settings::Setting as _;
 
 use crate::ai::auth_secret_types::auth_secret_types_for_harness;
 use crate::ai::cloud_agent_settings::CloudAgentSettings;
@@ -119,12 +118,8 @@ impl AuthSecretSelector {
             MenuEvent::ItemSelected => {}
         });
 
-        let new_type_sidecar = ctx.add_typed_action_view(|_ctx| {
-            Menu::new()
-                .with_width(SIDECAR_WIDTH)
-                .with_drop_shadow()
-                .prevent_interaction_with_other_elements()
-        });
+        let new_type_sidecar = ctx
+            .add_typed_action_view(|_ctx| Menu::new().with_width(SIDECAR_WIDTH).with_drop_shadow());
 
         ctx.subscribe_to_view(&new_type_sidecar, |me, _, event, ctx| match event {
             MenuEvent::Close { .. } => {
