@@ -39,8 +39,8 @@ jobs:
       - name: Create version tag
         id: create_tag
         run: |
-          TIMESTAMP=$(date +%Y.%m.%d.%H.%M)
-          TAG="v0.${TIMESTAMP}.${{ inputs.channel }}_00"
+          TIMESTAMP=$(date +%Y.%m.%d.%H.%M.%S)
+          TAG="v0.${TIMESTAMP}.${{ inputs.channel }}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Release tag: $TAG"
           # Create and push the actual git tag so the release can reference it.
