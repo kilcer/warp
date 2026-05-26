@@ -880,7 +880,7 @@ impl LeftPanelView {
         .finish()
     }
 
-    /// Background thread: watch USB hotplug via inotify (Linux) or polling (other platforms).
+    /// Background thread: watch USB hotplug via inotify (Linux) or adb track-devices (other platforms).
     fn usb_watcher_thread(state: Arc<Mutex<SharedAndroidState>>) {
         Self::update_device_list(&state);
 
@@ -889,15 +889,68 @@ impl LeftPanelView {
             match Self::try_inotify_watch(&state) {
                 Ok(()) => return,
                 Err(e) => {
-                    log::warn!("Android: inotify unavailable ({e}), falling back to polling");
+                    log::warn!("Android: inotify unavailable ({e}), falling back to track-devices");
                 }
             }
         }
 
-        // Polling fallback (always used on Windows/macOS).
+        // Use `adb track-devices` for event-driven device change detection.
+        // This is a long-running command that outputs a line each time the
+        // device list changes, so we don't need to poll.
+        Self::track_devices_watch(&state);
+    }
+
+    /// Watches device changes via `adb track-devices` long connection.
+    /// No polling needed — adb pushes updates as they happen.
+    fn track_devices_watch(state: &Arc<Mutex<SharedAndroidState>>) {
+        use std::io::BufRead;
+        use std::process::Stdio;
+        use crate::android::device::new_command;
+
         loop {
+            let mut child = match new_command("adb")
+                .args(["track-devices"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => {
+                    // adb not available, retry later
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    continue;
+                }
+            };
+
+            let stdout = match child.stdout.take() {
+                Some(s) => std::io::BufReader::new(s),
+                None => {
+                    let _ = child.kill();
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    continue;
+                }
+            };
+
+            // `adb track-devices` outputs the full device list each time
+            // something changes (device connect/disconnect). Each update
+            // ends with a blank line.
+            for line in stdout.lines() {
+                match line {
+                    Ok(line) if line.is_empty() => {
+                        // End of an update batch — refresh device list.
+                        Self::update_device_list(state);
+                    }
+                    Ok(_) => {
+                        // Device line collected; wait for the blank line.
+                    }
+                    Err(_) => break, // adb exited or error
+                }
+            }
+
+            // If we get here, adb track-devices exited (adb server died?).
+            // Clean up and retry after a short delay.
+            let _ = child.wait();
             std::thread::sleep(std::time::Duration::from_secs(5));
-            Self::update_device_list(&state);
         }
     }
 
