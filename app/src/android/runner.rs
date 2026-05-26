@@ -78,7 +78,7 @@ impl AndroidRunService {
 
     /// Extracts the app's package name and launchable activity using aapt.
     pub fn extract_app_identity(&self, apk_path: &Path) -> Result<AppIdentity, String> {
-        let output = Command::new("aapt")
+        let output = new_command("aapt")
             .args(["dump", "badging", &apk_path.to_string_lossy()])
             .output()
             .map_err(|e| format!(
@@ -96,7 +96,7 @@ impl AndroidRunService {
 
     /// Fallback using aapt2 (newer Android SDK versions).
     fn extract_app_identity_aapt2(&self, apk_path: &Path) -> Result<AppIdentity, String> {
-        let output = Command::new("aapt2")
+        let output = new_command("aapt2")
             .args(["dump", "badging", &apk_path.to_string_lossy()])
             .output()
             .map_err(|e| format!(

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/wkk/.ssh/**)",
+      "Bash(git config:*)",
+      "Bash(ssh-keygen:*)",
+      "Bash(ssh -T git@github.com)",
+      "Bash(mv /home/wkk/warp/.claude /tmp/.claude_backup)",
+      "Bash(git clone:*)",
+      "Bash(mv /tmp/.claude_backup /home/wkk/warp/.claude)"
+    ]
+  }
+}
