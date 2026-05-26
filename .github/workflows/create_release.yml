@@ -47,6 +47,8 @@ jobs:
           git tag "$TAG"
           git push origin "$TAG"
         shell: bash
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
           name: Warp ${{ inputs.channel }} ${{ steps.create_tag.outputs.tag }}
