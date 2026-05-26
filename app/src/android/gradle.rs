@@ -1,6 +1,8 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use super::device::new_command;
 
 /// Result of a Gradle command execution.
 #[derive(Debug)]
@@ -63,7 +65,7 @@ impl GradleService {
             }
         }
 
-        let output = Command::new(&gradlew)
+        let output = new_command(&gradlew)
             .args(args)
             .current_dir(&self.project_dir)
             .output()
@@ -113,7 +115,7 @@ impl GradleService {
             }
         }
 
-        let mut child = Command::new(&gradlew)
+        let mut child = new_command(&gradlew)
             .args(args)
             .current_dir(&self.project_dir)
             .stdout(Stdio::piped())

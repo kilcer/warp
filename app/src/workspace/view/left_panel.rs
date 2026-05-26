@@ -896,7 +896,7 @@ impl LeftPanelView {
 
         // Polling fallback (always used on Windows/macOS).
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            std::thread::sleep(std::time::Duration::from_secs(5));
             Self::update_device_list(&state);
         }
     }

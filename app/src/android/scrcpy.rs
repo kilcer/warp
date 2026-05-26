@@ -10,7 +10,9 @@
 
 use std::io::Read;
 use std::net::TcpStream;
-use std::process::{Child, Command};
+use std::process::Child;
+
+use super::device::new_command;
 
 /// Default scrcpy server version used by the protocol crate.
 const SCRCPY_SERVER_VERSION: &str = "3.3.3";
@@ -81,7 +83,7 @@ impl ScrcpyClient {
 
     /// Pushes the scrcpy server JAR to the device via ADB.
     pub fn push_server(&self, jar_path: &str) -> Result<(), String> {
-        let output = Command::new("adb")
+        let output = new_command("adb")
             .args([
                 "-s",
                 &self.config.device_serial,
@@ -113,7 +115,7 @@ impl ScrcpyClient {
             self.config.audio,
         );
 
-        let child = Command::new("adb")
+        let child = new_command("adb")
             .args(["-s", &self.config.device_serial, "shell", &args])
             .spawn()
             .map_err(|e| format!("Failed to start scrcpy server: {e}"))?;
@@ -130,7 +132,7 @@ impl ScrcpyClient {
         let local_port = self.config.local_port;
 
         // Remove any existing forward first
-        let _ = Command::new("adb")
+        let _ = new_command("adb")
             .args([
                 "-s",
                 &self.config.device_serial,
@@ -141,7 +143,7 @@ impl ScrcpyClient {
             .output();
 
         // Set up forward: local:port -> device:scrcpy socket
-        let output = Command::new("adb")
+        let output = new_command("adb")
             .args([
                 "-s",
                 &self.config.device_serial,
@@ -205,7 +207,7 @@ impl ScrcpyClient {
 
         // Clean up ADB forward
         let local_port = self.config.local_port;
-        let _ = Command::new("adb")
+        let _ = new_command("adb")
             .args([
                 "-s",
                 &self.config.device_serial,

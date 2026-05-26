@@ -1,5 +1,7 @@
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use super::device::new_command;
 
 /// Log level from Android's logcat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +126,7 @@ pub fn stream_logcat(
 ) -> Result<(), String> {
     // Optionally clear the log buffer first
     if config.clear_first {
-        let mut clear_cmd = Command::new("adb");
+        let mut clear_cmd = new_command("adb");
         if let Some(ref serial) = config.device_serial {
             clear_cmd.args(["-s", serial]);
         }
@@ -132,7 +134,7 @@ pub fn stream_logcat(
         let _ = clear_cmd.output();
     }
 
-    let mut cmd = Command::new("adb");
+    let mut cmd = new_command("adb");
     if let Some(ref serial) = config.device_serial {
         cmd.args(["-s", serial]);
     }

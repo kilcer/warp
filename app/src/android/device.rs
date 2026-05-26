@@ -2,6 +2,19 @@ use std::process::Command;
 
 use adb_client::server::ADBServer;
 
+/// Creates a new `Command` with Windows `CREATE_NO_WINDOW` flag so that
+/// child processes (adb, gradlew, etc.) do not pop up a visible console
+/// window. On non-Windows platforms this is a no-op.
+pub fn new_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// Represents a connected Android device.
 #[derive(Debug, Clone)]
 pub struct AndroidDevice {
@@ -31,7 +44,7 @@ impl AdbDeviceService {
 
     /// Checks if the `adb` binary is available in the system PATH.
     pub fn is_adb_available() -> bool {
-        Command::new("adb")
+        new_command("adb")
             .arg("version")
             .output()
             .map(|o| o.status.success())
@@ -42,7 +55,7 @@ impl AdbDeviceService {
     /// output. This is more reliable than the adb_client TCP crate because it
     /// uses the same CLI that users manually invoke.
     pub fn list_devices_cli() -> Result<Vec<AndroidDevice>, String> {
-        let output = Command::new("adb")
+        let output = new_command("adb")
             .args(["devices", "-l"])
             .output()
             .map_err(|e| format!("Failed to run adb: {e}"))?;

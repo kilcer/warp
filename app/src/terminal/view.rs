@@ -26613,7 +26613,9 @@ impl TerminalView {
         use crate::android::logcat_state::LOGCAT_STATE;
         use std::io::BufRead;
         use std::io::BufReader;
-        use std::process::{Command, Stdio};
+        use std::process::Stdio;
+
+        use crate::android::device::new_command;
 
         // Clear existing entries and mark as running.
         let serial = {
@@ -26627,7 +26629,7 @@ impl TerminalView {
         let thread_handle = self.android_logcat_thread.clone();
 
         let join_handle = std::thread::spawn(move || {
-            let mut cmd = Command::new("adb");
+            let mut cmd = new_command("adb");
             if let Some(s) = &serial {
                 cmd.args(["-s", s]);
             }

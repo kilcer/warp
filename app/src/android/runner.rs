@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
+use super::device::new_command;
 use super::gradle::GradleService;
 
 /// Result of parsing an Android app's identity from APK or manifest.
@@ -140,7 +140,7 @@ impl AndroidRunService {
 
     /// Installs the APK to the specified device.
     pub fn install_apk(&self, device_serial: &str, apk_path: &Path) -> Result<(), String> {
-        let output = Command::new("adb")
+        let output = new_command("adb")
             .args([
                 "-s",
                 device_serial,
@@ -178,7 +178,7 @@ impl AndroidRunService {
             None => identity.package_name.clone(),
         };
 
-        let output = Command::new("adb")
+        let output = new_command("adb")
             .args([
                 "-s",
                 device_serial,
