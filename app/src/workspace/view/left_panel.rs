@@ -175,6 +175,9 @@ pub struct ToolbeltButtonConfig {
 struct SharedAndroidState {
     devices: Vec<crate::android::device::AndroidDevice>,
     selected_index: usize,
+    /// Set to true by the watcher thread when device list changes.
+    /// Cleared by the UI thread after reading.
+    dirty: bool,
 }
 
 pub struct LeftPanelView {
@@ -257,6 +260,46 @@ impl LeftPanelView {
             std::thread::spawn(move || {
                 Self::usb_watcher_thread(state);
             });
+        }
+
+        // Android: poll dirty flag to trigger UI refresh when device list changes.
+        {
+            let state = Arc::clone(&android_state);
+            ctx.spawn(
+                async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        if let Ok(mut s) = state.lock() {
+                            if s.dirty {
+                                s.dirty = false;
+                                return true;
+                            }
+                        }
+                    }
+                },
+                |me, _, ctx| {
+                    ctx.notify();
+                    // Re-schedule the poll.
+                    let state = Arc::clone(&me.android_state);
+                    ctx.spawn(
+                        async move {
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                if let Ok(mut s) = state.lock() {
+                                    if s.dirty {
+                                        s.dirty = false;
+                                        return true;
+                                    }
+                                }
+                            }
+                        },
+                        |me, _, ctx| {
+                            ctx.notify();
+                            let _ = me;
+                        },
+                    );
+                },
+            );
         }
 
         let active_view = views.first().copied().unwrap_or(ToolPanelView::WarpDrive);
@@ -1017,15 +1060,18 @@ impl LeftPanelView {
             if s.devices.len() != devices.len()
                 || s.devices.iter().zip(&devices).any(|(a, b)| a.serial != b.serial)
             {
+                log::info!("[Android] Device list changed: {:?}",
+                    devices.iter().map(|d| d.serial.clone()).collect::<Vec<_>>());
                 s.devices = devices.clone();
                 if s.selected_index >= s.devices.len().max(1) {
                     s.selected_index = 0;
                 }
+                s.dirty = true;
             }
         }
         // Also sync to global LOGCAT_STATE so LogcatView can access the device list.
         if let Ok(mut ls) = crate::android::logcat_state::LOGCAT_STATE.lock() {
-            ls.devices = devices.clone();
+            ls.devices = devices;
         }
     }
 
