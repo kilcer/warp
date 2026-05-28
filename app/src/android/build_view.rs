@@ -4,7 +4,7 @@ use warpui::{
     TypedActionView,
     elements::{
         ClippedScrollStateHandle, ClippedScrollable, Container, CrossAxisAlignment, Element,
-        Empty, Flex, MainAxisAlignment, MainAxisSize, ParentElement, ScrollbarWidth,
+        Flex, MainAxisAlignment, MainAxisSize, ParentElement, ScrollbarWidth,
         SelectableArea, SelectionHandle, Shrinkable, Text,
     },
     AppContext, Entity, SingletonEntity, View, ViewContext,

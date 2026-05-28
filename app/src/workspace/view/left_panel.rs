@@ -175,6 +175,9 @@ pub struct ToolbeltButtonConfig {
 struct SharedAndroidState {
     devices: Vec<crate::android::device::AndroidDevice>,
     selected_index: usize,
+    /// Set to true by background thread when device list changes.
+    /// Checked by async poller on main thread to trigger UI repaint.
+    dirty: std::sync::atomic::AtomicBool,
 }
 
 pub struct LeftPanelView {
@@ -260,6 +263,11 @@ impl LeftPanelView {
         }
 
         // Android: poll dirty flag to trigger UI refresh when device list changes.
+        {
+            let state = Arc::clone(&android_state);
+            Self::spawn_device_poller(&android_state, ctx);
+        }
+
         let active_view = views.first().copied().unwrap_or(ToolPanelView::WarpDrive);
         let toolbelt_buttons = views
             .iter()
@@ -881,6 +889,34 @@ impl LeftPanelView {
         .finish()
     }
 
+    /// Spawns an async task that polls the dirty flag every 500ms and triggers
+    /// a UI repaint when the device list changes. Re-arms itself after each trigger.
+    fn spawn_device_poller(
+        state: &Arc<Mutex<SharedAndroidState>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let state = Arc::clone(state);
+        ctx.spawn(
+            async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let dirty = state
+                        .lock()
+                        .map(|s| s.dirty.swap(false, std::sync::atomic::Ordering::Relaxed))
+                        .unwrap_or(false);
+                    if dirty {
+                        return;
+                    }
+                }
+            },
+            |me, _, ctx| {
+                ctx.notify();
+                // Re-arm the poller for the next device change.
+                Self::spawn_device_poller(&me.android_state, ctx);
+            },
+        );
+    }
+
     /// Background thread: watch USB hotplug via inotify (Linux) or adb track-devices (other platforms).
     fn usb_watcher_thread(state: Arc<Mutex<SharedAndroidState>>) {
         Self::update_device_list(&state);
@@ -1024,7 +1060,7 @@ impl LeftPanelView {
                 if s.selected_index >= s.devices.len().max(1) {
                     s.selected_index = 0;
                 }
-                s.dirty = true;
+                s.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
         // Also sync to global LOGCAT_STATE so LogcatView can access the device list.

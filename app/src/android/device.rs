@@ -5,6 +5,7 @@ use adb_client::server::ADBServer;
 /// Creates a new `Command` with Windows `CREATE_NO_WINDOW` flag so that
 /// child processes (adb, gradlew, etc.) do not pop up a visible console
 /// window. On non-Windows platforms this is a no-op.
+#[allow(unused_mut)]
 pub fn new_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut cmd = Command::new(program);
     #[cfg(windows)]

@@ -1,6 +1,6 @@
 use super::settings_page::{
-    render_body_item, Category, LocalOnlyIconState, MatchData, PageType,
-    SettingsPageMeta, SettingsPageViewHandle, SettingsWidget, ToggleState,
+    render_body_item, LocalOnlyIconState, MatchData, PageType,
+    SettingsPageMeta, SettingsWidget, ToggleState,
 };
 use super::SettingsSection;
 use crate::appearance::Appearance;
