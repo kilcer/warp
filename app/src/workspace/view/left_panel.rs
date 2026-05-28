@@ -175,9 +175,6 @@ pub struct ToolbeltButtonConfig {
 struct SharedAndroidState {
     devices: Vec<crate::android::device::AndroidDevice>,
     selected_index: usize,
-    /// Set to true by the watcher thread when device list changes.
-    /// Cleared by the UI thread after reading.
-    dirty: bool,
 }
 
 pub struct LeftPanelView {
@@ -263,45 +260,6 @@ impl LeftPanelView {
         }
 
         // Android: poll dirty flag to trigger UI refresh when device list changes.
-        {
-            let state = Arc::clone(&android_state);
-            ctx.spawn(
-                async move {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        if let Ok(mut s) = state.lock() {
-                            if s.dirty {
-                                s.dirty = false;
-                                return true;
-                            }
-                        }
-                    }
-                },
-                |me, _, ctx| {
-                    ctx.notify();
-                    // Re-schedule the poll.
-                    let state = Arc::clone(&me.android_state);
-                    ctx.spawn(
-                        async move {
-                            loop {
-                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                                if let Ok(mut s) = state.lock() {
-                                    if s.dirty {
-                                        s.dirty = false;
-                                        return true;
-                                    }
-                                }
-                            }
-                        },
-                        |me, _, ctx| {
-                            ctx.notify();
-                            let _ = me;
-                        },
-                    );
-                },
-            );
-        }
-
         let active_view = views.first().copied().unwrap_or(ToolPanelView::WarpDrive);
         let toolbelt_buttons = views
             .iter()
@@ -1224,26 +1182,32 @@ impl LeftPanelView {
 
         let theme = appearance.theme();
 
-        // Read shared device state (lock is uncontended — only a 2s background thread)
+        // Read device list from LOGCAT_STATE (shared with logcat panel,
+        // kept up-to-date by the USB watcher thread).
         let (has_device, run_serial, device_text) = {
-            let state = self.android_state.lock().unwrap();
+            let state = crate::android::logcat_state::LOGCAT_STATE.lock().unwrap();
             let devices = &state.devices;
-            let selected_index = state.selected_index;
             let has_device = !devices.is_empty();
+            // Use selected_serial if set, otherwise first device.
+            let selected = if let Some(ref sel) = state.selected_serial {
+                devices.iter().position(|d| d.serial == *sel).unwrap_or(0)
+            } else {
+                0
+            };
             let run_serial = if has_device {
-                devices[selected_index.min(devices.len() - 1)].serial.clone()
+                devices[selected].serial.clone()
             } else {
                 String::new()
             };
             let device_text = if has_device {
-                let d = &devices[selected_index.min(devices.len() - 1)];
+                let d = &devices[selected];
                 let label = match (&d.model, &d.product) {
                     (Some(m), _) if !m.is_empty() => m.clone(),
                     (_, Some(p)) if !p.is_empty() => p.clone(),
                     _ => d.serial.clone(),
                 };
                 if devices.len() > 1 {
-                    format!("{} ({} of {})", label, selected_index + 1, devices.len())
+                    format!("{} ({} of {})", label, selected + 1, devices.len())
                 } else {
                     label
                 }
@@ -1274,17 +1238,21 @@ impl LeftPanelView {
             })
             .with_text_label(device_text)
             .build()
-            .on_click({
-                let state = Arc::clone(&self.android_state);
-                move |ctx, _, _| {
-                    if let Ok(mut s) = state.lock() {
+            .on_click(move |ctx, _, _| {
+                    if let Ok(mut s) = crate::android::logcat_state::LOGCAT_STATE.lock() {
                         if s.devices.len() > 1 {
-                            s.selected_index = (s.selected_index + 1) % s.devices.len();
+                            // Cycle selected_serial through available devices.
+                            let current = s.selected_serial.clone().unwrap_or_default();
+                            let next = s.devices.iter()
+                                .skip_while(|d| d.serial != current)
+                                .nth(1)
+                                .or_else(|| s.devices.first())
+                                .map(|d| d.serial.clone());
+                            s.selected_serial = next;
                         }
                     }
                     ctx.notify();
-                }
-            })
+                })
             .with_cursor(Cursor::PointingHand)
             .finish();
 
